@@ -50,7 +50,7 @@ local function esp(p, cr)
             local hrp_pos, onscreen = c:WorldToViewportPoint(hrp.Position)
             if onscreen then
                 text.Position = Vector2.new(hrp_pos.X, hrp_pos.Y - 27)
-                text.Text = string.format(" %s ", p.Name, distance)
+                text.Text = string.format("[ %s | %.0f studs ]", p.Name, distance)
                 text.Visible = true
             else
                 text.Visible = false
