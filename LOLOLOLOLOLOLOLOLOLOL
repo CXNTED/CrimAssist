@@ -1,0 +1,200 @@
+
+local c = workspace.CurrentCamera
+local ps = game:GetService("Players")
+local lp = ps.LocalPlayer
+local rs = game:GetService("RunService")
+
+local radius = 400 -- radius in studs
+
+local function esp(p, cr)
+    local h = cr:WaitForChild("Humanoid")
+    local hrp = cr:WaitForChild("HumanoidRootPart") or cr:WaitForChild("Head")
+
+    local text = Drawing.new("Text")
+    text.Visible = false
+    text.Center = true
+    text.Outline = false
+    text.Font = 3
+    text.Size = 16
+    text.Color = Color3.new(1, 1, 1)
+
+    local connections = {}
+
+    local function cleanup()
+        text.Visible = false
+        text:Remove()
+        for _, conn in pairs(connections) do
+            conn:Disconnect()
+        end
+    end
+
+    table.insert(connections, cr.AncestryChanged:Connect(function(_, parent)
+        if not parent then cleanup() end
+    end))
+
+    table.insert(connections, h.HealthChanged:Connect(function(v)
+        if v <= 0 or h:GetState() == Enum.HumanoidStateType.Dead then cleanup() end
+    end))
+
+    table.insert(connections, rs.RenderStepped:Connect(function()
+        local lpChar = lp.Character
+        if not lpChar or not lpChar:FindFirstChild("HumanoidRootPart") then
+            text.Visible = false
+            return
+        end
+
+        local myHRP = lpChar.HumanoidRootPart
+        local distance = (myHRP.Position - hrp.Position).Magnitude
+
+        if distance <= radius then
+            local hrp_pos, onscreen = c:WorldToViewportPoint(hrp.Position)
+            if onscreen then
+                text.Position = Vector2.new(hrp_pos.X, hrp_pos.Y - 27)
+                text.Text = string.format(" %s ", p.Name, distance)
+                text.Visible = true
+            else
+                text.Visible = false
+            end
+        else
+            text.Visible = false
+        end
+    end))
+end
+
+local function playerAdded(p)
+    if p == lp then return end
+    if p.Character then
+        esp(p, p.Character)
+    end
+    p.CharacterAdded:Connect(function(cr)
+        esp(p, cr)
+    end)
+end
+
+for _, p in ipairs(ps:GetPlayers()) do
+    if p ~= lp then
+        playerAdded(p)
+    end
+end
+
+ps.PlayerAdded:Connect(playerAdded)
+
+wait(2)
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+local TOGGLE_KEY = Enum.KeyCode.ButtonL2
+local FOV_DEGREES = 30
+local AIM_RANGE = 400
+local SMOOTHNESS = 1.7
+local REQUIRE_TEAM_CHECK = false
+local PREDICTION = 0.05 -- seconds ahead to predic
+
+local aimEnabled = false
+local lockedTarget = nil  -- store the locked target here
+
+local function validPart(p)
+    return p and p.Parent and p:IsA("BasePart")
+end
+
+local function getBestTarget()
+    local camCFrame = Camera.CFrame
+    local camPos = camCFrame.Position
+    local camLook = camCFrame.LookVector
+
+    local best = nil
+    local bestAngle = FOV_DEGREES
+    local bestDist = AIM_RANGE
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            if REQUIRE_TEAM_CHECK then
+                local lpTeam = LocalPlayer.Team
+                local pTeam = player.Team
+                if lpTeam and pTeam and lpTeam == pTeam then
+                    continue
+                end
+            end
+
+            local head = player.Character:FindFirstChild("Head")
+            local hrp = player.Character:FindFirstChild("HumanoidRootPart") or player.Character:FindFirstChild("Torso")
+            if validPart(head) and validPart(hrp) then
+                local dir = (head.Position - camPos)
+                local dist = dir.Magnitude
+                if dist <= AIM_RANGE then
+                    local dirUnit = dir.Unit
+                    local dot = camLook:Dot(dirUnit)
+                    dot = math.clamp(dot, -1, 1)
+                    local angleDeg = math.deg(math.acos(dot))
+                    if angleDeg <= FOV_DEGREES then
+                        if angleDeg < bestAngle or (math.abs(angleDeg - bestAngle) < 0.001 and dist < bestDist) then
+                            best = player
+                            bestAngle = angleDeg
+                            bestDist = dist
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return best
+end
+
+-- When L2 is pressed, lock on a target
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == TOGGLE_KEY then
+        aimEnabled = true
+        lockedTarget = getBestTarget()  -- lock onto the target at time of pressing
+        if lockedTarget then
+            print("[AimAssist] Locked onto", lockedTarget.Name)
+        else
+            print("[AimAssist] No target found")
+        end
+    end
+end)
+
+-- When L2 is released, clear target and disable aiming
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == TOGGLE_KEY then
+        aimEnabled = false
+        lockedTarget = nil
+        print("[AimAssist] Released lock")
+    end
+end)
+
+LocalPlayer.CharacterAdded:Connect(function(char)
+    aimEnabled = false
+    lockedTarget = nil
+end)
+
+RunService.RenderStepped:Connect(function(dt)
+    if not aimEnabled then return end
+    if not Camera then return end
+    if not lockedTarget or not lockedTarget.Character then return end
+
+    local character = lockedTarget.Character
+    local head = character:FindFirstChild("Head")
+    local hrp = character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso")
+
+    if not validPart(head) or not validPart(hrp) then return end
+
+    -- 🔮 Add prediction here
+    local predictedPosition = head.Position + hrp.Velocity * PREDICTION
+
+    local camPos = Camera.CFrame.Position
+    local desiredCFrame = CFrame.new(camPos, predictedPosition)
+
+    local damping = math.clamp(SMOOTHNESS, 0, 1)
+    local alpha = 1 - math.exp(-damping * 60 * dt)
+    local newCFrame = Camera.CFrame:Lerp(desiredCFrame, alpha)
+
+    Camera.CFrame = newCFrame
+end)
